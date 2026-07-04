@@ -36,7 +36,7 @@
 		<script type="module">
 
 			import * as THREE from 'three/webgpu';
-			import { Fn, bitangentWorld, cameraViewMatrix, color, float, mix, normalLocal, normalMap, normalWorld, pass, positionLocal, positionWorld, tangentWorld, texture, textureLevel, uniform, uv, vec2, vec3, vec4 } from 'three/tsl';
+			import { bitangentWorld, cameraProjectionMatrix, cameraViewMatrix, color, float, mix, normalLocal, normalMap, normalWorld, pass, positionLocal, positionWorld, tangentWorld, texture, textureLevel, uniform, uv, vec2, vec3, vec4 } from 'three/tsl';
 
 			import { Inspector } from 'three/addons/inspector/Inspector.js';
 
@@ -80,10 +80,11 @@
 			};
 
 			let camera, scene, renderer, controls, renderPipeline, keyLight;
-			let wallMaterial, floorMaterial;
+			let floorMesh;
 			let wallMap, columnMap, floorMap;
 
-			const shellMaterials = []; // one per cylinder radius, see makeShellCylinder
+			const wallMeshes = []; // front and back face, sharing one material
+			const shellSpecs = []; // one per shell cylinder, see makeShellCylinder
 
 			const depthScale = uniform( settings.scale );
 			const keyLightDirection = uniform( new THREE.Vector3() ); // world space, towards the key light
@@ -168,19 +169,19 @@
 				const wallBackGeometry = wallGeometry.clone();
 				wallBackGeometry.rotateY( Math.PI );
 
-				wallMaterial = new THREE.MeshStandardNodeMaterial();
-
 				const wall = new THREE.Group();
 
-				const wallFront = new THREE.Mesh( wallGeometry, wallMaterial );
+				const wallFront = new THREE.Mesh( wallGeometry );
 				wallFront.position.z = 0.02;
 				wallFront.castShadow = wallFront.receiveShadow = true;
 				wall.add( wallFront );
 
-				const wallBack = new THREE.Mesh( wallBackGeometry, wallMaterial );
+				const wallBack = new THREE.Mesh( wallBackGeometry );
 				wallBack.position.z = - 0.02;
 				wallBack.castShadow = wallBack.receiveShadow = true;
 				wall.add( wallBack );
+
+				wallMeshes.push( wallFront, wallBack );
 
 				// sunk slightly into the deck, so the carved bottom border never
 				// shows a sliver where the two relief volumes meet
@@ -214,14 +215,11 @@
 					const tileAround = 2 * Math.PI * radius / aroundTiles;
 					const ringTiles = Math.max( 2, Math.round( length / tileAround ) );
 
-					const material = new THREE.MeshStandardNodeMaterial();
-					material.positionNode = positionLocal.add( normalLocal.mul( depthScale.mul( reliefFactor * tileAround ) ) );
-
-					shellMaterials.push( { material, aroundTiles, ringTiles, reliefFactor, tileAround, tileAlong: length / ringTiles } );
-
-					const shell = new THREE.Mesh( shellGeometry, material );
+					const shell = new THREE.Mesh( shellGeometry );
 					shell.castShadow = shell.receiveShadow = true;
 					group.add( shell );
+
+					shellSpecs.push( { mesh: shell, aroundTiles, ringTiles, reliefFactor, tileAround, tileAlong: length / ringTiles } );
 
 					// the core sits a hair inside the shell, so the two never
 					// z-fight when the scale slider rests at zero
@@ -279,11 +277,9 @@
 				floorGeometry.rotateX( - Math.PI / 2 );
 				floorGeometry.computeTangents();
 
-				floorMaterial = new THREE.MeshStandardNodeMaterial();
-
-				const floor = new THREE.Mesh( floorGeometry, floorMaterial );
-				floor.receiveShadow = true;
-				scene.add( floor );
+				floorMesh = new THREE.Mesh( floorGeometry );
+				floorMesh.receiveShadow = true;
+				scene.add( floorMesh );
 
 				updateMaterials();
 
@@ -915,7 +911,9 @@
 			// feathers to zero where the march left the height field, and
 			// alpha to coverage antialiases the clipped edge.
 
-			function applyPlatingMaterial( material, map, mapSize, scale, worldPerTile, reliefWorld, reliefOptions ) {
+			function makePlatingMaterial( map, mapSize, scale, worldPerTile, reliefWorld, reliefOptions ) {
+
+				const material = new THREE.MeshStandardNodeMaterial();
 
 				const { pomUV, sample, coverage, shadow, normalNode } = buildRelief( map, {
 					scale: scale,
@@ -952,46 +950,82 @@
 				material.alphaTestNode = coverage !== null ? float( 0.5 ) : null;
 				material.alphaToCoverage = coverage !== null;
 
-				// the "shadows" ladder: geometry keeps plain shadow maps; carved
-				// re-runs the coverage march in the shadow pass (it evaluates
-				// from the light's camera there), so shadow silhouettes follow
-				// the relief; relief additionally samples the received shadows
-				// at the marched hit position, so shadow edges crawl across the
-				// relief instead of projecting onto the base surface.
+				// the shadows ladder. 'off' zeroes the key shadow's intensity and
+				// 'geometry' leaves the shadow maps to the smooth base geometry.
+				// 'carved' re-runs the coverage march in the shadow pass through
+				// maskShadowNode (it evaluates from the light's camera there),
+				// so cast shadows follow the relief silhouettes - the beauty
+				// pass alpha test does NOT carry over on its own. 'relief'
+				// additionally moves both sides of the shadow map to the marched
+				// hit: the shadow pass writes the hit's depth (its camera is the
+				// light's), so the map itself is relief-shaped, and the received
+				// lookup samples at the same hit - recesses genuinely shadow
+				// themselves instead of projecting onto the base surface.
 
 				const carve = settings.shadows === 'carved' || settings.shadows === 'relief';
 
-				material.castShadowNode = ( coverage !== null && carve ) ? Fn( () => {
+				if ( coverage !== null && carve ) {
 
-					coverage.lessThan( 0.5 ).discard();
+					material.maskShadowNode = coverage.greaterThanEqual( 0.5 );
 
-					return vec4( 0.0, 0.0, 0.0, 1.0 );
-
-				} )() : null;
+				}
 
 				if ( settings.parallax === true && settings.shadows === 'relief' ) {
 
 					const reliefOffset = pomUV.sub( reliefOptions.uvNode || uv() );
+					const reliefDrop = float( 1.0 ).sub( height ).mul( reliefWorld );
 
-					material.receivedShadowPositionNode = positionWorld
+					const marched = positionWorld
 						.add( tangentWorld.normalize().mul( reliefOffset.x.mul( worldPerTile[ 0 ] ) ) )
 						.add( bitangentWorld.normalize().mul( reliefOffset.y.mul( worldPerTile[ 1 ] ) ) )
-						.sub( normalWorld.normalize().mul( float( 1.0 ).sub( height ).mul( reliefWorld ) ) );
+						.sub( normalWorld.normalize().mul( reliefDrop ) );
 
-				} else {
+					const marchedClip = cameraProjectionMatrix.mul( cameraViewMatrix ).mul( vec4( marched, 1.0 ) );
 
-					material.receivedShadowPositionNode = null;
+					material.depthNode = marchedClip.z.div( marchedClip.w );
+					material.receivedShadowPositionNode = marched;
 
 				}
 
 				material.normalNode = normalNode;
 				material.roughnessNode = mix( float( 0.66 ), float( 0.32 ), tone.min( 0.78 ) );
 				material.metalnessNode = float( 0.22 );
-				material.needsUpdate = true;
+
+				return material;
 
 			}
 
 			function updateMaterials() {
+
+				// the shadow pass compiles its pipeline once per mesh, and later
+				// swapping that mesh's material does not invalidate it - so the
+				// settings swap in fresh meshes along with freshly built
+				// materials, and every change (including the shadows ladder)
+				// applies deterministically
+
+				// 'off' zeroes the shadow intensity instead of toggling the
+				// light's castShadow, so the shadow machinery stays alive and
+				// re-enabling never wedges
+
+				keyLight.shadow.intensity = settings.shadows === 'off' ? 0 : 1;
+
+				const previous = new Set();
+
+				const replace = ( mesh, material ) => {
+
+					const fresh = new THREE.Mesh( mesh.geometry, material );
+					fresh.position.copy( mesh.position );
+					fresh.rotation.copy( mesh.rotation );
+					fresh.castShadow = mesh.castShadow;
+					fresh.receiveShadow = mesh.receiveShadow;
+
+					mesh.parent.add( fresh );
+					mesh.parent.remove( mesh );
+					previous.add( mesh.material );
+
+					return fresh;
+
+				};
 
 				// bulkhead wall: the whole face is one relief tile, so the map's
 				// [0, 1] UV range doubles as the silhouette bounds - rays that
@@ -999,9 +1033,11 @@
 				// wall's outline crenellates along the border trim. The relief
 				// depth converts from world units through the wall height.
 
-				applyPlatingMaterial( wallMaterial, wallMap, WALL_MAP_SIZE, depthScale.mul( 1.2 / WALL_HEIGHT ), [ WALL_WIDTH, WALL_HEIGHT ], depthScale.mul( 1.2 ), {
+				const wallMaterial = makePlatingMaterial( wallMap, WALL_MAP_SIZE, depthScale.mul( 1.2 / WALL_HEIGHT ), [ WALL_WIDTH, WALL_HEIGHT ], depthScale.mul( 1.2 ), {
 					silhouette: settings.silhouette
 				} );
+
+				for ( let i = 0; i < wallMeshes.length; i ++ ) wallMeshes[ i ] = replace( wallMeshes[ i ], wallMaterial );
 
 				// columns and pipes: repeating UVs (no bounds) with the curved
 				// silhouette test - the flange rings overhang the cylinder
@@ -1010,9 +1046,11 @@
 				// along its length, so marches along the axis stay level and
 				// the relief holds up when sighting down a pipe.
 
-				for ( const { material, aroundTiles, ringTiles, reliefFactor, tileAround, tileAlong } of shellMaterials ) {
+				for ( const spec of shellSpecs ) {
 
-					applyPlatingMaterial( material, columnMap, COLUMN_MAP_SIZE, depthScale.mul( reliefFactor ), [ tileAround, tileAlong ], depthScale.mul( reliefFactor * tileAround ), {
+					const { aroundTiles, ringTiles, reliefFactor, tileAround, tileAlong } = spec;
+
+					const material = makePlatingMaterial( columnMap, COLUMN_MAP_SIZE, depthScale.mul( reliefFactor ), [ tileAround, tileAlong ], depthScale.mul( reliefFactor * tileAround ), {
 						silhouette: settings.silhouette,
 						uvNode: uv().mul( vec2( aroundTiles, ringTiles ) ),
 						silhouetteBounds: [ - 1e6, 1e6 ],
@@ -1020,15 +1058,24 @@
 						curvature: [ 2 * Math.PI / aroundTiles, 0 ]
 					} );
 
+					// each shell inflates along its normals by the relief
+					// height at its own radius, so the flanges overhang
+
+					material.positionNode = positionLocal.add( normalLocal.mul( depthScale.mul( reliefFactor * tileAround ) ) );
+
+					spec.mesh = replace( spec.mesh, material );
+
 				}
 
 				// slab deck: repeating UVs, so the march runs without the
 				// silhouette test
 
-				applyPlatingMaterial( floorMaterial, floorMap, FLOOR_MAP_SIZE, depthScale.mul( 0.4 ), [ 3.2, 3.2 ], depthScale.mul( 0.4 * 3.2 ), {
+				floorMesh = replace( floorMesh, makePlatingMaterial( floorMap, FLOOR_MAP_SIZE, depthScale.mul( 0.4 ), [ 3.2, 3.2 ], depthScale.mul( 0.4 * 3.2 ), {
 					silhouette: false,
 					uvNode: uv().mul( 5 )
-				} );
+				} ) );
+
+				for ( const material of previous ) material.dispose();
 
 			}
 
@@ -1058,12 +1105,7 @@
 				gui.add( settings, 'parallax' ).onChange( updateMaterials );
 				gui.add( settings, 'silhouette' ).onChange( updateMaterials );
 				gui.add( settings, 'selfShadow' ).onChange( updateMaterials );
-				gui.add( settings, 'shadows', [ 'off', 'geometry', 'carved', 'relief' ] ).onChange( ( value ) => {
-
-					keyLight.castShadow = value !== 'off';
-					updateMaterials();
-
-				} );
+				gui.add( settings, 'shadows', [ 'off', 'geometry', 'carved', 'relief' ] ).onChange( updateMaterials );
 				gui.add( settings, 'scale', 0, 0.25 ).onChange( ( value ) => depthScale.value = value );
 				gui.add( settings, 'quality', Object.keys( QUALITIES ) ).onChange( updateMaterials );
 				gui.add( settings, 'bloom' );

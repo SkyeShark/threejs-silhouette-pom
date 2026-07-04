@@ -81,10 +81,14 @@ material.colorNode = baseColor.mul( lit.mul( 0.72 ).add( 0.28 ) ); // spare the 
 
 Toggleable in the demo's `selfShadow` setting (on by default). The demo also has a
 `shadows` mode ladder for the scene's shadow maps — `off / geometry / carved / relief`:
-`carved` re-runs the coverage march in the shadow pass (it evaluates from the light's
-camera there) so cast shadows follow the relief silhouettes, and `relief` additionally
-samples received shadows at the marched hit position (`receivedShadowPositionNode`), so
-shadow edges crawl across the relief instead of projecting onto the base surface.
+`carved` re-runs the coverage march in the shadow pass through `maskShadowNode` (it
+evaluates from the light's camera there), so cast shadows follow the relief silhouettes,
+and `relief` moves both sides of the shadow map to the marched hit — the shadow pass
+writes the hit's depth (`depthNode`) and received shadows sample at the hit
+(`receivedShadowPositionNode`) — so the map itself is relief-shaped and recesses
+genuinely shadow themselves. One demo-sourced tip: the ladder swaps in freshly built
+meshes and materials on every change, because the shadow pass compiles its pipeline
+once per mesh and ignores later material mutation.
 
 ## Notes
 
