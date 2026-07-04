@@ -36,7 +36,7 @@
 		<script type="module">
 
 			import * as THREE from 'three/webgpu';
-			import { Fn, cameraViewMatrix, color, float, mix, normalLocal, normalMap, pass, positionLocal, texture, textureLevel, uniform, uv, vec2, vec3, vec4 } from 'three/tsl';
+			import { Fn, bitangentWorld, cameraViewMatrix, color, float, mix, normalLocal, normalMap, normalWorld, pass, positionLocal, positionWorld, tangentWorld, texture, textureLevel, uniform, uv, vec2, vec3, vec4 } from 'three/tsl';
 
 			import { Inspector } from 'three/addons/inspector/Inspector.js';
 
@@ -72,6 +72,7 @@
 				selfShadow: true,
 				scale: 0.15,
 				quality: 'medium',
+				shadows: 'relief',
 				bloom: false,
 				keyAzimuth: - 59,
 				keyElevation: 29,
@@ -216,7 +217,7 @@
 					const material = new THREE.MeshStandardNodeMaterial();
 					material.positionNode = positionLocal.add( normalLocal.mul( depthScale.mul( reliefFactor * tileAround ) ) );
 
-					shellMaterials.push( { material, aroundTiles, ringTiles, reliefFactor } );
+					shellMaterials.push( { material, aroundTiles, ringTiles, reliefFactor, tileAround, tileAlong: length / ringTiles } );
 
 					const shell = new THREE.Mesh( shellGeometry, material );
 					shell.castShadow = shell.receiveShadow = true;
@@ -914,9 +915,9 @@
 			// feathers to zero where the march left the height field, and
 			// alpha to coverage antialiases the clipped edge.
 
-			function applyPlatingMaterial( material, map, mapSize, scale, reliefOptions ) {
+			function applyPlatingMaterial( material, map, mapSize, scale, worldPerTile, reliefWorld, reliefOptions ) {
 
-				const { sample, coverage, shadow, normalNode } = buildRelief( map, {
+				const { pomUV, sample, coverage, shadow, normalNode } = buildRelief( map, {
 					scale: scale,
 					texel: 1.0 / mapSize,
 					...reliefOptions
@@ -951,17 +952,37 @@
 				material.alphaTestNode = coverage !== null ? float( 0.5 ) : null;
 				material.alphaToCoverage = coverage !== null;
 
-				// carve the cast shadows too: the shadow pass re-runs the march
-				// from the light's point of view, so shadow silhouettes follow
-				// the relief instead of the smooth base geometry
+				// the "shadows" ladder: geometry keeps plain shadow maps; carved
+				// re-runs the coverage march in the shadow pass (it evaluates
+				// from the light's camera there), so shadow silhouettes follow
+				// the relief; relief additionally samples the received shadows
+				// at the marched hit position, so shadow edges crawl across the
+				// relief instead of projecting onto the base surface.
 
-				material.castShadowNode = coverage !== null ? Fn( () => {
+				const carve = settings.shadows === 'carved' || settings.shadows === 'relief';
+
+				material.castShadowNode = ( coverage !== null && carve ) ? Fn( () => {
 
 					coverage.lessThan( 0.5 ).discard();
 
 					return vec4( 0.0, 0.0, 0.0, 1.0 );
 
 				} )() : null;
+
+				if ( settings.parallax === true && settings.shadows === 'relief' ) {
+
+					const reliefOffset = pomUV.sub( reliefOptions.uvNode || uv() );
+
+					material.receivedShadowPositionNode = positionWorld
+						.add( tangentWorld.normalize().mul( reliefOffset.x.mul( worldPerTile[ 0 ] ) ) )
+						.add( bitangentWorld.normalize().mul( reliefOffset.y.mul( worldPerTile[ 1 ] ) ) )
+						.sub( normalWorld.normalize().mul( float( 1.0 ).sub( height ).mul( reliefWorld ) ) );
+
+				} else {
+
+					material.receivedShadowPositionNode = null;
+
+				}
 
 				material.normalNode = normalNode;
 				material.roughnessNode = mix( float( 0.66 ), float( 0.32 ), tone.min( 0.78 ) );
@@ -978,7 +999,7 @@
 				// wall's outline crenellates along the border trim. The relief
 				// depth converts from world units through the wall height.
 
-				applyPlatingMaterial( wallMaterial, wallMap, WALL_MAP_SIZE, depthScale.mul( 1.2 / WALL_HEIGHT ), {
+				applyPlatingMaterial( wallMaterial, wallMap, WALL_MAP_SIZE, depthScale.mul( 1.2 / WALL_HEIGHT ), [ WALL_WIDTH, WALL_HEIGHT ], depthScale.mul( 1.2 ), {
 					silhouette: settings.silhouette
 				} );
 
@@ -989,9 +1010,9 @@
 				// along its length, so marches along the axis stay level and
 				// the relief holds up when sighting down a pipe.
 
-				for ( const { material, aroundTiles, ringTiles, reliefFactor } of shellMaterials ) {
+				for ( const { material, aroundTiles, ringTiles, reliefFactor, tileAround, tileAlong } of shellMaterials ) {
 
-					applyPlatingMaterial( material, columnMap, COLUMN_MAP_SIZE, depthScale.mul( reliefFactor ), {
+					applyPlatingMaterial( material, columnMap, COLUMN_MAP_SIZE, depthScale.mul( reliefFactor ), [ tileAround, tileAlong ], depthScale.mul( reliefFactor * tileAround ), {
 						silhouette: settings.silhouette,
 						uvNode: uv().mul( vec2( aroundTiles, ringTiles ) ),
 						silhouetteBounds: [ - 1e6, 1e6 ],
@@ -1004,7 +1025,7 @@
 				// slab deck: repeating UVs, so the march runs without the
 				// silhouette test
 
-				applyPlatingMaterial( floorMaterial, floorMap, FLOOR_MAP_SIZE, depthScale.mul( 0.4 ), {
+				applyPlatingMaterial( floorMaterial, floorMap, FLOOR_MAP_SIZE, depthScale.mul( 0.4 ), [ 3.2, 3.2 ], depthScale.mul( 0.4 * 3.2 ), {
 					silhouette: false,
 					uvNode: uv().mul( 5 )
 				} );
@@ -1037,6 +1058,12 @@
 				gui.add( settings, 'parallax' ).onChange( updateMaterials );
 				gui.add( settings, 'silhouette' ).onChange( updateMaterials );
 				gui.add( settings, 'selfShadow' ).onChange( updateMaterials );
+				gui.add( settings, 'shadows', [ 'off', 'geometry', 'carved', 'relief' ] ).onChange( ( value ) => {
+
+					keyLight.castShadow = value !== 'off';
+					updateMaterials();
+
+				} );
 				gui.add( settings, 'scale', 0, 0.25 ).onChange( ( value ) => depthScale.value = value );
 				gui.add( settings, 'quality', Object.keys( QUALITIES ) ).onChange( updateMaterials );
 				gui.add( settings, 'bloom' );

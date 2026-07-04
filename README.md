@@ -79,7 +79,12 @@ const lit = pom.shadow( cameraViewMatrix.mul( vec4( keyLightDirWorld, 0.0 ) ).xy
 material.colorNode = baseColor.mul( lit.mul( 0.72 ).add( 0.28 ) ); // spare the fill lights
 ```
 
-Toggleable in the demo's `selfShadow` setting (on by default).
+Toggleable in the demo's `selfShadow` setting (on by default). The demo also has a
+`shadows` mode ladder for the scene's shadow maps — `off / geometry / carved / relief`:
+`carved` re-runs the coverage march in the shadow pass (it evaluates from the light's
+camera there) so cast shadows follow the relief silhouettes, and `relief` additionally
+samples received shadows at the marched hit position (`receivedShadowPositionNode`), so
+shadow edges crawl across the relief instead of projecting onto the base surface.
 
 ## Notes
 
