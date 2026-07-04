@@ -73,10 +73,12 @@
 				scale: 0.15,
 				quality: 'medium',
 				bloom: false,
+				keyAzimuth: - 59,
+				keyElevation: 29,
 				autoRotate: true
 			};
 
-			let camera, scene, renderer, controls, renderPipeline;
+			let camera, scene, renderer, controls, renderPipeline, keyLight;
 			let wallMaterial, floorMaterial;
 			let wallMap, columnMap, floorMap;
 
@@ -131,8 +133,7 @@
 
 				scene.add( new THREE.AmbientLight( 0x404855, 0.55 ) );
 
-				const keyLight = new THREE.DirectionalLight( 0xffdcb2, 3.0 );
-				keyLight.position.set( - 5, 3.2, 3.0 );
+				keyLight = new THREE.DirectionalLight( 0xffdcb2, 3.0 );
 				keyLight.castShadow = true;
 				keyLight.shadow.camera.left = - 8;
 				keyLight.shadow.camera.right = 8;
@@ -144,7 +145,7 @@
 				keyLight.shadow.normalBias = 0.05;
 				scene.add( keyLight );
 
-				keyLightDirection.value.copy( keyLight.position ).normalize();
+				updateKeyLight();
 
 				const fillLight = new THREE.DirectionalLight( 0x8fb1d8, 0.7 );
 				fillLight.position.set( 3.5, 1.5, 2.5 );
@@ -1010,6 +1011,25 @@
 
 			}
 
+			// orbits the key light around the set - the shadow map and the self
+			// shadow march both follow, so the relief shadows can be inspected
+			// from any light angle
+
+			function updateKeyLight() {
+
+				const azimuth = settings.keyAzimuth * Math.PI / 180;
+				const elevation = settings.keyElevation * Math.PI / 180;
+
+				keyLight.position.set(
+					Math.sin( azimuth ) * Math.cos( elevation ),
+					Math.sin( elevation ),
+					Math.cos( azimuth ) * Math.cos( elevation )
+				).multiplyScalar( 6.6 );
+
+				keyLightDirection.value.copy( keyLight.position ).normalize();
+
+			}
+
 			function initGui() {
 
 				const gui = renderer.inspector.createParameters( 'settings' );
@@ -1020,6 +1040,8 @@
 				gui.add( settings, 'scale', 0, 0.25 ).onChange( ( value ) => depthScale.value = value );
 				gui.add( settings, 'quality', Object.keys( QUALITIES ) ).onChange( updateMaterials );
 				gui.add( settings, 'bloom' );
+				gui.add( settings, 'keyAzimuth', - 180, 180 ).onChange( updateKeyLight );
+				gui.add( settings, 'keyElevation', 5, 85 ).onChange( updateKeyLight );
 				gui.add( settings, 'autoRotate' ).onChange( ( value ) => controls.autoRotate = value );
 
 			}
