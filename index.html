@@ -36,7 +36,7 @@
 		<script type="module">
 
 			import * as THREE from 'three/webgpu';
-			import { cameraViewMatrix, color, float, mix, normalLocal, normalMap, pass, positionLocal, texture, textureLevel, uniform, uv, vec2, vec3, vec4 } from 'three/tsl';
+			import { Fn, cameraViewMatrix, color, float, mix, normalLocal, normalMap, pass, positionLocal, texture, textureLevel, uniform, uv, vec2, vec3, vec4 } from 'three/tsl';
 
 			import { Inspector } from 'three/addons/inspector/Inspector.js';
 
@@ -937,7 +937,7 @@
 					// a second march toward the key light: relief casts soft
 					// shadows across itself. Scaled to spare the fill lights.
 
-					const lit = shadow( cameraViewMatrix.mul( vec4( keyLightDirection, 0.0 ) ).xyz );
+					const lit = shadow( cameraViewMatrix.mul( vec4( keyLightDirection, 0.0 ) ).xyz, { steps: 20, strength: 12 } );
 
 					surface = surface.mul( lit.mul( 0.85 ).add( 0.15 ) );
 
@@ -949,6 +949,18 @@
 				material.opacityNode = coverage;
 				material.alphaTestNode = coverage !== null ? float( 0.5 ) : null;
 				material.alphaToCoverage = coverage !== null;
+
+				// carve the cast shadows too: the shadow pass re-runs the march
+				// from the light's point of view, so shadow silhouettes follow
+				// the relief instead of the smooth base geometry
+
+				material.castShadowNode = coverage !== null ? Fn( () => {
+
+					coverage.lessThan( 0.5 ).discard();
+
+					return vec4( 0.0, 0.0, 0.0, 1.0 );
+
+				} )() : null;
 
 				material.normalNode = normalNode;
 				material.roughnessNode = mix( float( 0.66 ), float( 0.32 ), tone.min( 0.78 ) );
