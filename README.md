@@ -5,7 +5,10 @@ A single TSL function ray-marches a height map and clips the silhouette through 
 alpha-test path, so relief overhangs the geometry it sits on, in the spirit of the
 shell-mapped surfaces in modern AAA titles (and the classic prism / shell mapping papers).
 
-![screenshot](screenshot.jpg)
+**▶ [Live demo](https://skyeshark.github.io/threejs-silhouette-pom/)** (WebGPU-capable browser required, e.g. Chrome/Edge)
+ · [Open in StackBlitz](https://stackblitz.com/github/SkyeShark/threejs-silhouette-pom)
+
+[![screenshot](screenshot.jpg)](https://skyeshark.github.io/threejs-silhouette-pom/)
 
 **Everything in this scene is flat geometry.** The blast door is a recessed height field on a
 plane; the wall's outline crenellates along its relief trim; the flanges and bolts on the
