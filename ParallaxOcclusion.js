@@ -105,7 +105,10 @@ import { Break, Fn, If, Loop, abs, clamp, dFdx, dFdy, dot, float, max, min, mix,
  * node (1 inside the relief, feathering to 0 where the silhouette clips) for `material.opacityNode`, and
  * `missed` is the equivalent boolean for a plain discard - both `null` when `silhouette` is disabled.
  * `sample( map, coord )` samples the given texture at the offset UV (or at `coord`) with gradients that
- * remain valid inside the marched region.
+ * remain valid inside the marched region. `shadow( lightDirection, { steps = 16, strength = 8,
+ * bias = 0.03 } )` marches from the hit point toward the given view space light direction and returns a
+ * soft self-shadow factor (1 fully lit, 0 fully shadowed) to attenuate that light's contribution - build
+ * it in the same context as `uv` and `sample`, not inside a normalNode graph.
  */
 export const parallaxOcclusionUV = ( heightMap, options = {} ) => {
 
@@ -427,6 +430,58 @@ export const parallaxOcclusionUV = ( heightMap, options = {} ) => {
 
 	}
 
-	return { uv: offsetUV, missed, coverage, sample };
+	// Self shadowing: a second, shorter march from the hit point toward the
+	// light. Where higher relief blocks the light ray the point falls into
+	// shadow; blockers are weighted by their proximity, which softens the
+	// penumbra the further a shadow is cast. Build the returned node in the
+	// same context as `uv` and `sample` (not inside a normalNode graph).
+
+	const shadow = ( lightDirection, shadowOptions = {} ) => {
+
+		const {
+			steps = 16,
+			strength = 8,
+			bias = 0.03
+		} = shadowOptions;
+
+		// the light direction (view space, pointing towards the light) in the
+		// same tangent frame the view march uses
+
+		const light = normalize( vec3(
+			dot( lightDirection, tangentView ),
+			dot( lightDirection, normalViewGeometry.cross( tangentView ).mul( tangentGeometry.w ) ),
+			dot( lightDirection, normalViewGeometry )
+		) ).toVar();
+
+		// climb from just above the hit point to the top of the height field
+
+		const rayHeight = textureLevel( heightMap, coordAt( offsetUV ), 0 ).r.add( bias ).toVar();
+		const stepRise = float( 1.0 ).sub( rayHeight ).div( steps ).toVar();
+		const stepUV = light.xy.div( max( light.z, 0.1 ) ).mul( scaleNode ).mul( stepRise ).toVar();
+
+		const shadowUV = vec2( offsetUV ).toVar();
+		const occlusion = float( 0.0 ).toVar();
+		const proximity = float( 1.0 ).toVar();
+
+		Loop( { start: 0, end: steps, type: 'int' }, () => {
+
+			shadowUV.addAssign( stepUV );
+			rayHeight.addAssign( stepRise );
+			proximity.subAssign( 1.0 / steps );
+
+			const blocker = textureLevel( heightMap, coordAt( shadowUV ), 0 ).r.sub( rayHeight );
+
+			occlusion.assign( max( occlusion, blocker.mul( proximity ) ) );
+
+		} );
+
+		// fully dark once the light drops below the surface's horizon
+
+		return clamp( float( 1.0 ).sub( occlusion.mul( strength ) ), 0.0, 1.0 )
+			.mul( clamp( light.z.mul( 12.0 ), 0.0, 1.0 ) );
+
+	};
+
+	return { uv: offsetUV, missed, coverage, sample, shadow };
 
 };

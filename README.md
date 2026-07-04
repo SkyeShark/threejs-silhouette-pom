@@ -70,6 +70,17 @@ The `curvature` option accepts a constant, a per-axis pair (`[ 2 * Math.PI / til
 is exact for a cylinder), or a function of UV for surfaces that mix flat and curved regions
 (sag is then integrated along the march path).
 
+**Self shadowing** — `pom.shadow( lightDirectionView, { steps, strength, bias } )` marches a
+second, shorter ray from each hit point toward the light and returns a soft shadow factor
+(1 lit → 0 shadowed), so relief casts penumbra-softened shadows across itself:
+
+```js
+const lit = pom.shadow( cameraViewMatrix.mul( vec4( keyLightDirWorld, 0.0 ) ).xyz );
+material.colorNode = baseColor.mul( lit.mul( 0.72 ).add( 0.28 ) ); // spare the fill lights
+```
+
+Toggleable in the demo's `selfShadow` setting (on by default).
+
 ## Notes
 
 - Requires geometry tangents: `geometry.computeTangents()`.

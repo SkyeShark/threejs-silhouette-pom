@@ -36,7 +36,7 @@
 		<script type="module">
 
 			import * as THREE from 'three/webgpu';
-			import { color, float, mix, normalLocal, normalMap, pass, positionLocal, texture, textureLevel, uniform, uv, vec2, vec3 } from 'three/tsl';
+			import { cameraViewMatrix, color, float, mix, normalLocal, normalMap, pass, positionLocal, texture, textureLevel, uniform, uv, vec2, vec3, vec4 } from 'three/tsl';
 
 			import { Inspector } from 'three/addons/inspector/Inspector.js';
 
@@ -69,6 +69,7 @@
 			const settings = {
 				parallax: true,
 				silhouette: true,
+				selfShadow: true,
 				scale: 0.15,
 				quality: 'medium',
 				bloom: false,
@@ -82,6 +83,7 @@
 			const shellMaterials = []; // one per cylinder radius, see makeShellCylinder
 
 			const depthScale = uniform( settings.scale );
+			const keyLightDirection = uniform( new THREE.Vector3() ); // world space, towards the key light
 
 			init();
 
@@ -129,6 +131,8 @@
 				const keyLight = new THREE.DirectionalLight( 0xfff1e0, 2.6 );
 				keyLight.position.set( - 3, 4, 4 );
 				scene.add( keyLight );
+
+				keyLightDirection.value.copy( keyLight.position ).normalize();
 
 				const fillLight = new THREE.DirectionalLight( 0x8fb1d8, 0.9 );
 				fillLight.position.set( 3.5, 1.5, 2.5 );
@@ -821,12 +825,12 @@
 
 				const [ minLayers, maxLayers ] = QUALITIES[ settings.quality ];
 
-				let pomUV, sample, coverage;
+				let pomUV, sample, coverage, shadow;
 				let normalUV, normalSample;
 
 				if ( settings.parallax === true ) {
 
-					( { uv: pomUV, sample, coverage } = parallaxOcclusionUV( heightMap, { minLayers, maxLayers, ...options } ) );
+					( { uv: pomUV, sample, coverage, shadow } = parallaxOcclusionUV( heightMap, { minLayers, maxLayers, ...options } ) );
 
 					// normalNode is compiled in its own sub-build, so the node graph
 					// assigned to it needs a dedicated march
@@ -840,6 +844,7 @@
 					normalUV = pomUV;
 					normalSample = sample;
 					coverage = null;
+					shadow = null;
 
 				}
 
@@ -876,7 +881,7 @@
 
 				const packedNormal = vec3( left.sub( right ).mul( strength ), bottom.sub( top ).mul( strength ), 1.0 ).normalize().mul( 0.5 ).add( 0.5 );
 
-				return { pomUV, sample, coverage, normalNode: normalMap( packedNormal ) };
+				return { pomUV, sample, coverage, shadow, normalNode: normalMap( packedNormal ) };
 
 			}
 
@@ -890,7 +895,7 @@
 
 			function applyPlatingMaterial( material, map, mapSize, scale, reliefOptions ) {
 
-				const { sample, coverage, normalNode } = buildRelief( map, {
+				const { sample, coverage, shadow, normalNode } = buildRelief( map, {
 					scale: scale,
 					texel: 1.0 / mapSize,
 					...reliefOptions
@@ -905,7 +910,20 @@
 
 				const paint = tone.smoothstep( 0.80, 0.83 ).mul( tone.smoothstep( 0.92, 0.95 ).oneMinus() );
 
-				material.colorNode = mix( plating, color( 0xc7a13f ).mul( height.mul( 0.5 ).add( 0.5 ) ), paint );
+				let surface = mix( plating, color( 0xc7a13f ).mul( height.mul( 0.5 ).add( 0.5 ) ), paint );
+
+				if ( settings.selfShadow === true && shadow !== null ) {
+
+					// a second march toward the key light: relief casts soft
+					// shadows across itself. Scaled to spare the fill lights.
+
+					const lit = shadow( cameraViewMatrix.mul( vec4( keyLightDirection, 0.0 ) ).xyz );
+
+					surface = surface.mul( lit.mul( 0.72 ).add( 0.28 ) );
+
+				}
+
+				material.colorNode = surface;
 				material.emissiveNode = mix( color( 0x36d8f0 ), color( 0xff2fae ), tone.smoothstep( 0.45, 0.55 ) ).mul( glow.pow( 2.0 ) ).mul( 3.2 );
 
 				material.opacityNode = coverage;
@@ -966,6 +984,7 @@
 
 				gui.add( settings, 'parallax' ).onChange( updateMaterials );
 				gui.add( settings, 'silhouette' ).onChange( updateMaterials );
+				gui.add( settings, 'selfShadow' ).onChange( updateMaterials );
 				gui.add( settings, 'scale', 0, 0.25 ).onChange( ( value ) => depthScale.value = value );
 				gui.add( settings, 'quality', Object.keys( QUALITIES ) ).onChange( updateMaterials );
 				gui.add( settings, 'bloom' );
