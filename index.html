@@ -93,6 +93,8 @@
 				renderer.setPixelRatio( window.devicePixelRatio );
 				renderer.setSize( window.innerWidth, window.innerHeight );
 				renderer.toneMapping = THREE.ACESFilmicToneMapping;
+				renderer.shadowMap.enabled = true;
+				renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 				renderer.inspector = new Inspector();
 				document.body.appendChild( renderer.domElement );
 
@@ -123,22 +125,32 @@
 				controls.autoRotate = settings.autoRotate;
 				controls.autoRotateSpeed = 1.0;
 
-				// three point lighting: warm key, cool fill, and a rim light from
-				// behind that outlines the carved silhouettes
+				// three point lighting: a warm key raking in low from the left -
+				// long relief shadows are what sells the parallax self shadowing -
+				// with a quiet cool fill and a rim light for the carved outlines
 
-				scene.add( new THREE.AmbientLight( 0x404855, 0.7 ) );
+				scene.add( new THREE.AmbientLight( 0x404855, 0.55 ) );
 
-				const keyLight = new THREE.DirectionalLight( 0xfff1e0, 2.6 );
-				keyLight.position.set( - 3, 4, 4 );
+				const keyLight = new THREE.DirectionalLight( 0xffdcb2, 3.0 );
+				keyLight.position.set( - 5, 3.2, 3.0 );
+				keyLight.castShadow = true;
+				keyLight.shadow.camera.left = - 8;
+				keyLight.shadow.camera.right = 8;
+				keyLight.shadow.camera.top = 8;
+				keyLight.shadow.camera.bottom = - 4;
+				keyLight.shadow.camera.near = 0.5;
+				keyLight.shadow.camera.far = 30;
+				keyLight.shadow.mapSize.set( 2048, 2048 );
+				keyLight.shadow.normalBias = 0.05;
 				scene.add( keyLight );
 
 				keyLightDirection.value.copy( keyLight.position ).normalize();
 
-				const fillLight = new THREE.DirectionalLight( 0x8fb1d8, 0.9 );
+				const fillLight = new THREE.DirectionalLight( 0x8fb1d8, 0.7 );
 				fillLight.position.set( 3.5, 1.5, 2.5 );
 				scene.add( fillLight );
 
-				const rimLight = new THREE.DirectionalLight( 0xdfe8ff, 1.6 );
+				const rimLight = new THREE.DirectionalLight( 0xdfe8ff, 1.3 );
 				rimLight.position.set( 0.5, 3.5, - 4 );
 				scene.add( rimLight );
 
@@ -160,10 +172,12 @@
 
 				const wallFront = new THREE.Mesh( wallGeometry, wallMaterial );
 				wallFront.position.z = 0.02;
+				wallFront.castShadow = wallFront.receiveShadow = true;
 				wall.add( wallFront );
 
 				const wallBack = new THREE.Mesh( wallBackGeometry, wallMaterial );
 				wallBack.position.z = - 0.02;
+				wallBack.castShadow = wallBack.receiveShadow = true;
 				wall.add( wallBack );
 
 				// sunk slightly into the deck, so the carved bottom border never
@@ -203,12 +217,16 @@
 
 					shellMaterials.push( { material, aroundTiles, ringTiles, reliefFactor } );
 
-					group.add( new THREE.Mesh( shellGeometry, material ) );
+					const shell = new THREE.Mesh( shellGeometry, material );
+					shell.castShadow = shell.receiveShadow = true;
+					group.add( shell );
 
 					// the core sits a hair inside the shell, so the two never
 					// z-fight when the scale slider rests at zero
 
-					group.add( new THREE.Mesh( new THREE.CylinderGeometry( radius - 0.005, radius - 0.005, length, 48 ), coreMaterial ) );
+					const core = new THREE.Mesh( new THREE.CylinderGeometry( radius - 0.005, radius - 0.005, length, 48 ), coreMaterial );
+					core.castShadow = core.receiveShadow = true;
+					group.add( core );
 
 					// end caps: flat hardware the relief cannot fake, sized to
 					// the flange radius at the default relief depth
@@ -220,6 +238,7 @@
 
 						const cap = new THREE.Mesh( capGeometry, capMaterial );
 						cap.position.y = end * ( length / 2 + 0.02 );
+						cap.castShadow = cap.receiveShadow = true;
 						group.add( cap );
 
 					}
@@ -261,6 +280,7 @@
 				floorMaterial = new THREE.MeshStandardNodeMaterial();
 
 				const floor = new THREE.Mesh( floorGeometry, floorMaterial );
+				floor.receiveShadow = true;
 				scene.add( floor );
 
 				updateMaterials();
@@ -919,7 +939,7 @@
 
 					const lit = shadow( cameraViewMatrix.mul( vec4( keyLightDirection, 0.0 ) ).xyz );
 
-					surface = surface.mul( lit.mul( 0.72 ).add( 0.28 ) );
+					surface = surface.mul( lit.mul( 0.85 ).add( 0.15 ) );
 
 				}
 
